@@ -77,12 +77,96 @@ Auth material (`session_cookie`, `selected_identity_json`, `data_sync_id`, `acco
 whitelist (`commands.rs::UI_SETTINGS`), so the renderer cannot read or overwrite it. The UI only
 ever sees display fields plus opaque selectors (`id`, `selectionKey`).
 
+## 4. Importing a session from Chrome (`browsercookies.rs`, `browserauth.rs`)
+
+"Sign in with Chrome" reuses the Google session Chrome is already holding, so nothing has to be
+typed. It is not an OAuth handshake and could not be: Google will not release `SID`/`SAPISID` to a
+loopback redirect, and no OAuth scope returns the private InnerTube cookies the rest of the app
+authenticates with. The only way to reuse a browser login is to read its cookie store, which is
+what `yt-dlp --cookies-from-browser` does.
+
+The import produces a `Cookie:` header and hands it to `AppState::sign_in` — the same seam the
+login webview feeds — so multi-account, the channel picker and cookie rotation all behave
+identically afterwards. Nothing imported reaches the renderer: the header exists only inside
+`browserauth::sign_in_from_browser` and the `sign_in` argument.
+
+**macOS only.** The database is the same everywhere; only the key differs (Linux:
+gnome-keyring/kwallet or the literal `peanuts` with *one* PBKDF2 iteration; Windows: DPAPI, which
+Chrome 127+ wraps in app-bound encryption that is deliberately unreadable from another process).
+Elsewhere `browsercookies::available()` is false and the UI hides the button.
+
+How a value is read, all of which Chromium fixes in `os_crypt_mac.mm`:
+
+1. The key is `PBKDF2-HMAC-SHA1(keychain password, "saltysalt", 1003)`, 16 bytes.
+2. Each `encrypted_value` is `v10` + AES-128-CBC, IV = sixteen spaces.
+3. Chrome 131 (`meta.version` 24) prepends `SHA256(host_key)` to the plaintext. That prefix is
+   *verified*, not assumed — which is also what makes a wrong key fail cleanly rather than yield
+   plausible garbage that would then be sent to Google as a login attempt.
+4. Only unpartitioned rows count (`top_frame_site_key = ''`). CHIPS-partitioned third-party
+   cookies share a name with the first-party one and vastly outnumber it — on a real profile, 344
+   of 364 YouTube rows are partitioned and `VISITOR_INFO1_LIVE` has 85 partitioned rows and no
+   first-party row at all. Without the filter one of those is picked arbitrarily.
+5. The surviving rows go through the same youtube-domain-only, most-specific-domain-wins rule as
+   `session.rs::youtube_cookie_header`, so both sign-in paths produce the same shape of header.
+
+### The Keychain prompt, and why `/usr/bin/security`
+
+The password is read by shelling out to `security find-generic-password`, not by linking
+`security-framework`. The Keychain grants access per *calling binary*, identified by its
+code-signing requirement; release builds are signed ad-hoc, whose identity is the cdhash and so
+changes on every build. An in-process read would therefore re-prompt after every update and every
+`cargo tauri dev` recompile, while `/usr/bin/security` is Apple-signed and stable.
+
+**Chrome's ACL lists Chrome alone, so a foreign reader gets the full dialog and the user must type
+their macOS login password.** Two answers, and the difference matters:
+
+- **Allow** — valid for that one `security` call. The derived key is then cached in memory for the
+  life of the process, so this is one prompt per launch, and typically only on the launch where
+  the import actually happens.
+- **Always Allow** — adds `/usr/bin/security` to the item's ACL permanently, which means **any
+  process running as this user can read Chrome Safe Storage silently from then on**. That is a
+  real and lasting reduction in the machine's security posture. The picker says so before the
+  dialog appears (`nav.chrome_keychain_hint`), and Allow is what it recommends.
+
+The key is never written to `settings`, to a file, or to the app's own Keychain: it is a
+cross-application credential, and persisting it would turn a prompt-gated read into a standing
+capability.
+
+### Provenance and healing
+
+`account_sources` (`id`, `source`) records which browser profile an account was imported from,
+keyed on the same `ga-<md5>` id as `accounts`. It is a sidecar table rather than a column on
+`accounts` so `StoredAccount` and every `INSERT` above it stay untouched. The row is written only
+*after* `sign_in` succeeds, so a rejected cookie cannot teach the healer to return to a profile
+that does not authenticate.
+
+`refresh_session` consults it first: an imported account heals by re-importing from its browser,
+because this webview may never have held a Google session at all. The re-import compares SAPISID
+before applying anything, so healing can no more move the user to a different account than the
+webview path can. A row left behind by a removed account is harmless for the same reason — the
+compare simply fails and the webview heal takes over.
+
+**Known limitation:** Chrome's on-disk jar only rotates while Chrome itself is running and
+visiting Google. With Chrome closed, the re-import returns the jar we already have, the heal
+declines, and it falls through to the webview — which for an imported account has nothing to
+re-mint from. In practice this is rare, because the imported jar carries the long-lived
+`__Secure-1PSID` and the transport's own `Set-Cookie` merge plus the half-hourly `account_menu`
+ping keep the app's copy rolling without Chrome. When it does happen, opening YouTube in Chrome
+once and retrying is the fix.
+
+This is a best-effort convenience, not a supported Google flow. If Chrome adopts app-bound
+encryption (`v20`) on macOS as it has on Windows, it stops working and says so rather than
+failing obscurely; the login webview remains the path that always works.
+
 ## Flow summary
 
 - **Sign in** (`login_webview`): ServiceLogin webview, redirect to music.youtube.com, cookies
   captured, validated via `account_menu`, `accounts` row upserted (keyed on SAPISID, so a new
   Google account adds a row and a known one refreshes its own), `active_account` set,
   `auth-changed` emitted.
+- **Sign in with Chrome** (`sign_in_with_browser`): Chrome's cookie store is read and decrypted,
+  the youtube-domain jar becomes a `Cookie` header, and it goes through the same `AppState::sign_in`
+  as above. `account_sources` records the profile afterwards. See §4; macOS only.
 - **Session freshness** (#165 / KI-2): Google rotates its short-lived tokens
   (`__Secure-*SIDTS`) on authenticated responses. The innertube transport merges every
   `Set-Cookie` into its jar and raises `cookie_changed`; the app writes the rotated jar back to

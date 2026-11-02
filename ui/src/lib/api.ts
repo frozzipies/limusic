@@ -549,6 +549,34 @@ export const signOut = () => invoke<void>('sign_out');
  * while the webview already holds a Google session.
  */
 export const loginWebview = (addAccount = false) => invoke<void>('login_webview', { addAccount });
+
+/** One Chrome profile offered by the import picker. Carries no cookie material. */
+export interface BrowserProfile {
+	/** Opaque selector to send back; the on-disk path never leaves Rust. */
+	dir: string;
+	name: string;
+	email: string | null;
+	/** Has a first-party YouTube session. `false` rows are listed but not selectable. */
+	signed_in: boolean;
+}
+export interface BrowserSignInStatus {
+	/** False on Linux/Windows and where Chrome has never run — hide the entry point entirely. */
+	supported: boolean;
+	profiles: BrowserProfile[];
+	/** Supported but unusable (no profiles, store unreadable). Safe to show verbatim. */
+	problem: string | null;
+}
+/**
+ * Can we sign in from the Google session Chrome already holds? Decrypts nothing, so calling this
+ * never triggers the macOS Keychain prompt — only `signInWithBrowser` does.
+ */
+export const browserSignInStatus = () => invoke<BrowserSignInStatus>('browser_sign_in_status');
+/** Sign in with a Chrome profile's existing session. Resolves false when a channel pick is due. */
+export const signInWithBrowser = (profile: string) =>
+	invoke<boolean>('sign_in_with_browser', { profile });
+/** Forget that an account came from Chrome, so it heals from the login webview again. */
+export const forgetBrowserSource = (id: string) =>
+	invoke<void>('forget_browser_source', { id });
 /** Saved Google accounts for the account menu (display fields only). */
 export const getGoogleAccounts = () => invoke<SavedAccount[]>('get_google_accounts');
 /** Activate a saved account without a Google re-login. Fails if its stored session expired. */

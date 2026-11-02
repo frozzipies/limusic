@@ -3,6 +3,8 @@
 mod appicon;
 mod audioproxy;
 mod blocked;
+mod browserauth;
+mod browsercookies;
 mod cipher;
 mod commands;
 mod db;
@@ -1148,6 +1150,9 @@ pub fn run() {
             commands::switch_account,
             commands::sign_out,
             commands::login_webview,
+            commands::browser_sign_in_status,
+            commands::sign_in_with_browser,
+            commands::forget_browser_source,
             commands::get_google_accounts,
             commands::switch_google_account,
             commands::remove_google_account,

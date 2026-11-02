@@ -740,6 +740,51 @@ pub async fn login_webview(state: St<'_>, add_account: Option<bool>) -> Result<(
     Ok(())
 }
 
+/// Whether "Sign in with Chrome" can work here, and which profiles it could use, so the UI can
+/// hide the button rather than offer something that always fails. Decrypts nothing, so building
+/// the picker never triggers the Keychain prompt. `problem` is set when Chrome is present but
+/// unusable (no profiles, store unreadable) and is safe to show verbatim.
+#[tauri::command]
+pub async fn browser_sign_in_status() -> Result<serde_json::Value, String> {
+    let supported = crate::browsercookies::available();
+    if !supported {
+        return Ok(serde_json::json!({ "supported": false, "profiles": [], "problem": null }));
+    }
+    // Opens a SQLite file per profile; off the async runtime like every other blocking read.
+    let found = tauri::async_runtime::spawn_blocking(crate::browsercookies::profiles)
+        .await
+        .map_err(|e| format!("Chrome profile scan failed: {e}"))?;
+    Ok(match found {
+        Ok(profiles) => serde_json::json!({
+            "supported": true, "profiles": profiles, "problem": null
+        }),
+        Err(problem) => serde_json::json!({
+            "supported": true, "profiles": [], "problem": problem
+        }),
+    })
+}
+
+/// Sign in with the Google session a Chrome profile already holds. Prompts the macOS Keychain
+/// the first time in a run. Returns false when the account authenticated but still needs a
+/// channel picked, matching `login_webview`'s `account-selection-required` path.
+#[tauri::command]
+pub async fn sign_in_with_browser(state: St<'_>, profile: String) -> Result<bool, String> {
+    let state = state.inner().clone();
+    let target = crate::browserauth::BrowserRef {
+        browser: crate::browserauth::CHROME.to_string(),
+        profile,
+    };
+    let outcome = crate::browserauth::sign_in_from_browser(&state, target).await?;
+    Ok(matches!(outcome, crate::state::SignInOutcome::Complete))
+}
+
+/// Forget that an account came from a browser, so it heals from the login webview again.
+#[tauri::command]
+pub async fn forget_browser_source(state: St<'_>, id: String) -> Result<(), String> {
+    state.db.clear_account_source(&id);
+    Ok(())
+}
+
 /// The current track, play state, position and duration in one shot. Events are the normal
 /// channel; this is for a webview that started after them (the mini player, or the main window
 /// on a cold start, where the queue is restored before the UI subscribes).

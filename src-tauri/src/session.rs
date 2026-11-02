@@ -184,6 +184,14 @@ pub async fn refresh_session(app: AppHandle, state: Arc<AppState>) {
     if !state.it.is_logged_in() || !claim_refresh() {
         return;
     }
+    // An account imported from a browser heals by re-importing from that same browser: this
+    // webview may never have held a Google session at all, so the path below would have nothing
+    // to re-mint from. Falls through on anything other than a successful heal, so the webview
+    // remains the backstop. `claim_refresh` is deliberately already spent — one heal attempt per
+    // cooldown in total, whichever path serves it.
+    if crate::browserauth::try_heal(&state).await {
+        return;
+    }
     let (tx, mut rx) = tokio::sync::mpsc::unbounded_channel::<()>();
     let app2 = app.clone();
     let dispatched = app.run_on_main_thread(move || {
@@ -266,7 +274,7 @@ pub async fn refresh_session(app: AppHandle, state: Arc<AppState>) {
 /// Same cookies, whatever order they came out in. The stored header is rebuilt by two different
 /// paths (the webview export sorts, the transport's rotation merge appends), so comparing the
 /// strings would report a change on every launch.
-fn same_jar(a: &str, b: &str) -> bool {
+pub(crate) fn same_jar(a: &str, b: &str) -> bool {
     let pairs = |s: &str| {
         let mut v: Vec<String> = s.split(';').map(|kv| kv.trim().to_owned()).collect();
         v.sort();

@@ -267,6 +267,18 @@ impl Db {
                 manual          INTEGER NOT NULL DEFAULT 0,
                 updated_at      INTEGER NOT NULL
             );
+            -- Which browser profile an account was imported from (browsercookies.rs), so the
+            -- session heal can re-import from the same place instead of from the login webview,
+            -- which for an imported account was never signed in to Google at all.
+            --
+            -- A sidecar rather than a column on `accounts`: that would add a field to
+            -- `StoredAccount` and so touch every struct literal and INSERT above it, for
+            -- something only one module reads. Keyed on the same `ga-<md5>` id, so re-importing
+            -- the same Google account finds its own provenance again.
+            CREATE TABLE IF NOT EXISTS account_sources (
+                id     TEXT PRIMARY KEY,
+                source TEXT NOT NULL
+            );
             "#,
         )?;
         // Migrate pre-Phase-4 DBs that predate the loudness_db column. Errors ("duplicate column")
@@ -630,6 +642,33 @@ impl Db {
     pub fn remove_account(&self, id: &str) {
         let conn = self.0.lock().unwrap();
         let _ = conn.execute("DELETE FROM accounts WHERE id = ?1", [id]);
+    }
+
+    /// Record that `id` was imported from a browser profile, so the heal knows where to go back
+    /// to. Written only after a sign-in succeeds: a rejected cookie must not teach the healer to
+    /// re-import from a profile that does not authenticate.
+    pub fn set_account_source(&self, id: &str, source: &str) {
+        let conn = self.0.lock().unwrap();
+        let _ = conn.execute(
+            "INSERT INTO account_sources(id, source) VALUES(?1, ?2) \
+             ON CONFLICT(id) DO UPDATE SET source = excluded.source",
+            [id, source],
+        );
+    }
+
+    /// Where this account was imported from, or `None` for one signed in through the webview.
+    pub fn get_account_source(&self, id: &str) -> Option<String> {
+        let conn = self.0.lock().unwrap();
+        conn.query_row("SELECT source FROM account_sources WHERE id = ?1", [id], |r| r.get(0))
+            .ok()
+    }
+
+    /// Forget the provenance, so the account heals from the login webview again. A row left
+    /// behind by a removed account is harmless — the heal re-checks SAPISID before applying
+    /// anything — which is why `remove_account` does not call this.
+    pub fn clear_account_source(&self, id: &str) {
+        let conn = self.0.lock().unwrap();
+        let _ = conn.execute("DELETE FROM account_sources WHERE id = ?1", [id]);
     }
 
     /// Write a saved account's fields into the active-account `settings` projections and flip the

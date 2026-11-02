@@ -57,6 +57,17 @@ discord-rich-presence = "1.1.0"
 # Last.fm API signature (api_sig is md5 of the sorted params + secret), and the stable
 # saved-account key (db.rs::account_key).
 md-5 = "0.10"
+# Reading Chrome's cookie store to sign in with the browser's existing Google session
+# (browsercookies.rs). Chromium encrypts each value with AES-128-CBC under a key it derives from
+# a Keychain password via PBKDF2-HMAC-SHA1; these are exactly that, nothing more. Pure Rust, no
+# C dependency, and unused on platforms where the module compiles to its stub.
+aes = "0.8"
+cbc = { version = "0.1", features = ["alloc"] }
+pbkdf2 = { version = "0.12", default-features = false, features = ["hmac"] }
+sha1 = "0.10"
+# Verifies the SHA-256 domain-hash prefix Chrome 131+ puts ahead of each cookie value, which also
+# turns a wrong Keychain key into a clean failure instead of plausible garbage.
+sha2 = "0.10"
 lofty = "0.22.2"
 tauri-plugin-dialog = "2.7.2"
 tauri-plugin-window-state = "2.4.1"

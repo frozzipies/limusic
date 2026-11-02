@@ -15,6 +15,8 @@
 	} from '@hugeicons/core-free-icons';
 	import { Button } from '$lib/components/ui/button';
 	import * as AlertDialog from '$lib/components/ui/alert-dialog';
+	import BrowserProfilePicker from './BrowserProfilePicker.svelte';
+	import { importAction, pickerRows } from '$lib/browserimport';
 	import * as api from '$lib/api';
 	import { auth, openChannelPicker, toast } from '$lib/player.svelte';
 	import { thumb } from '$lib/thumb';
@@ -31,6 +33,14 @@
 	let confirmOpen = $state(false);
 	// The active account already has the block above it; listing it again just repeats itself.
 	const others = $derived(accounts.filter((a) => !a.active));
+
+	// "Sign in with Chrome": read the Google session Chrome already holds instead of typing one in.
+	// `null` until the menu has been opened once, and on any platform where Rust says no, which
+	// `importAction` turns into 'hidden'.
+	let chromeStatus = $state<api.BrowserSignInStatus | null>(null);
+	let pickerOpen = $state(false);
+	let importing = $state<string | null>(null);
+	const chromeAction = $derived(importAction(chromeStatus));
 
 	/**
 	 * Right-anchored under the trigger, like the Last.fm menu next to it. The saved-account list
@@ -49,6 +59,37 @@
 		} catch (e) {
 			toast.error(String(e));
 			accounts = [];
+		}
+		// Re-read every open: Chrome can be installed, signed in or signed out while we sit here,
+		// and this decrypts nothing so it never costs a Keychain prompt. A failure just hides the
+		// button rather than surfacing an error for something the user did not ask for.
+		chromeStatus = await api.browserSignInStatus().catch(() => null);
+	}
+
+	/**
+	 * Sign in from Chrome's own session. One signed-in profile goes straight through; several open
+	 * the picker, because choosing for the user here would be choosing their Google account.
+	 */
+	function signInWithChrome() {
+		if (chromeAction.kind === 'direct') void importFromChrome(chromeAction.dir);
+		else if (chromeAction.kind === 'pick') pickerOpen = true;
+		else if (chromeAction.kind === 'problem') toast.error(chromeAction.message);
+	}
+
+	/** Hands the profile to Rust, which reads the cookies and signs in; `auth-changed` does the rest. */
+	async function importFromChrome(dir: string) {
+		if (importing) return;
+		importing = dir;
+		try {
+			await api.signInWithBrowser(dir);
+			pickerOpen = false;
+			menuOpen = false;
+		} catch (e) {
+			// The Rust errors are written to be read: "Choose Allow when prompted", "Open
+			// youtube.com in Chrome, sign in, then try again".
+			toast.error(String(e));
+		} finally {
+			importing = null;
 		}
 	}
 
@@ -251,7 +292,22 @@
 			     Google session, which is the fast path back into whichever account it last held.
 			     Add account is the one that clears it first, so it is the way to reach a different
 			     one. Both are offered rather than guessing which the user meant. -->
-			<Button class="mt-3 w-full" onclick={signInGoogle}>{t('common.sign_in_google')}</Button>
+			<!-- Offered above the webview sign-in when Chrome has a session to lend, because it is
+			     the one that needs nothing typed. Hidden entirely off macOS and when no Chrome
+			     profile is signed in to YouTube, rather than failing on click. -->
+			{#if chromeAction.kind !== 'hidden'}
+				<Button class="mt-3 w-full" onclick={signInWithChrome} disabled={importing !== null}>
+					{importing !== null ? t('common.loading') : t('common.sign_in_chrome')}
+				</Button>
+				<p class="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+					{t('nav.sign_in_chrome_hint')}
+				</p>
+			{/if}
+			<Button
+				variant={chromeAction.kind === 'hidden' ? 'default' : 'outline'}
+				class={chromeAction.kind === 'hidden' ? 'mt-3 w-full' : 'mt-2 w-full'}
+				onclick={signInGoogle}>{t('common.sign_in_google')}</Button
+			>
 			{#if others.length > 0}
 				<Button variant="outline" size="sm" class="mt-2 w-full justify-start gap-2" onclick={addAccount}>
 					<HugeiconsIcon icon={Add01Icon} class="size-5 shrink-0" />
@@ -261,6 +317,15 @@
 		{/if}
 	</div>
 {/if}
+
+<!-- Outside the menu block for the same reason as the confirm below: the import closes the menu
+     on success, and the picker must not go with it. -->
+<BrowserProfilePicker
+	bind:open={pickerOpen}
+	profiles={pickerRows(chromeStatus)}
+	{importing}
+	onpick={importFromChrome}
+/>
 
 <!-- Outside the menu block on purpose: the menu can close under it (a switch, an auth-changed
      remount) and the confirm must not vanish with it. -->
