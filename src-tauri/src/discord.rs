@@ -65,7 +65,7 @@ const REPO_URL: &str = "https://github.com/SimoHypers/limusic";
 /// register in the Discord developer portal and nothing to keep in sync at release time; if this
 /// path ever moves, the badge silently stops rendering and nothing else breaks.
 const BADGE_URL: &str =
-    "https://raw.githubusercontent.com/SimoHypers/limusic/master/src-tauri/icons/128x128.png";
+    "https://raw.githubusercontent.com/frozzipies/limusic/master/src-tauri/icons/128x128.png";
 
 /// Reconnect backoff while enabled but unconnected (Discord not running, or it quit). Starts short
 /// — Discord may simply be slower to start than we are — and eases off so a permanently-absent
